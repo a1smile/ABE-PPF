@@ -253,6 +253,30 @@ class RegistrationStats:
     # KDE 精修调用次数。
     kde_refine_calls: int
 
+    # scene 预处理耗时。
+    scene_preprocess_time: float = 0.0
+
+    # PPF 前端（pair/query/vote + pose proposal）耗时。
+    ppf_frontend_time: float = 0.0
+
+    # pose selection 耗时。
+    pose_selection_time: float = 0.0
+
+    # pose clustering 耗时。
+    pose_clustering_time: float = 0.0
+
+    # legacy clustering 耗时。
+    legacy_clustering_time: float = 0.0
+
+    # 后端总耗时。
+    backend_time: float = 0.0
+
+    # 最终姿态策略。
+    final_pose_policy: str = "auto"
+
+    # 实际走到的最终姿态路径。
+    final_pose_path: str = ""
+
 
 # 执行 PPF 注册主循环，并返回最终位姿和调试信息。
 def ppf_register(
@@ -270,6 +294,9 @@ def ppf_register(
     enable_rsmrq = bool(cfg.get("enable_rsmrq", False))
     enable_robust = bool(cfg.get("enable_robust_vote", False))
     enable_kde = bool(cfg.get("enable_kde_refine", False))
+    rsmrq_cfg = cfg.get("rsmrq", {}) or {}
+    raw_global_candidate_cap = rsmrq_cfg.get("global_candidate_cap", None)
+    global_candidate_cap = None if raw_global_candidate_cap is None else int(raw_global_candidate_cap)
 
     # 从运行时配置中读取当前对象的对称信息（若存在）。
     symmetry_meta = cfg.get("_runtime_symmetry_meta", None)
@@ -290,6 +317,15 @@ def ppf_register(
     # 读取 pose selection 配置总开关。
     pose_select_cfg = cfg.get("pose_selection", {})
     enable_pose_selection = bool(pose_select_cfg.get("enable", False))
+
+    # 读取最终姿态策略。
+    # 可选：
+    # - auto：兼容旧逻辑
+    # - legacy_cluster：强制走旧 cluster_poses
+    # - raw_top1_vote：直接输出 votes 最高的原始候选
+    # - selected_top1：输出 pose selection 后的第一名
+    # - selected_plus_mode_cluster：对 pose selection 候选做模式聚类
+    final_pose_policy = str(cfg.get("final_pose_policy", "auto")).lower()
 
     # 读取 KDE 配置。
     kde_cfg = cfg.get("kde_refine", {})
@@ -332,6 +368,17 @@ def ppf_register(
 
     # 保存候选膨胀统计。
     candidate_inflations = []
+    rsmrq_merged_pre_cap = []
+    rsmrq_merged_post_cap = []
+    rsmrq_cap_hits = 0
+
+    # 记录细粒度耗时。
+    ppf_frontend_time = 0.0
+    pose_selection_time = 0.0
+    pose_clustering_time = 0.0
+    legacy_clustering_time = 0.0
+    backend_time = 0.0
+    final_pose_path = ""
 
     # 初始化鲁棒投票统计。
     rv_stats = RobustVoteStats()
@@ -347,6 +394,9 @@ def ppf_register(
 
     # 读取原始聚类使用的旋转阈值并转换为弧度。
     rot_thresh_rad = math.radians(float(cfg.get("rot_thresh_deg", 30.0)))
+
+    # 记录 PPF 前端起始时间。
+    t_frontend_start = time.perf_counter()
 
     # 按设定步长遍历场景参考点。
     for sr in range(0, Nscene, scene_ref_sampling_rate):
@@ -454,6 +504,26 @@ def ppf_register(
                 # union 模式下只保留唯一候选，不累计重复次数。
                 if model.merge_mode == "union":
                     merged = {k: (v[0], 1) for k, v in merged.items()}
+
+                pre_cap_count = len(merged)
+                if global_candidate_cap is not None:
+                    rsmrq_merged_pre_cap.append(pre_cap_count)
+
+                    def _candidate_proxy(entry, count):
+                        if enable_robust and entry.g is not None and voter is not None:
+                            gm = np.array(entry.g, dtype=np.float32)
+                            return -float(voter.residual(gs, gm, model.model_diameter))
+                        return 0.0
+
+                    merged = model.hash_table.truncate_merged_candidates(
+                        merged,
+                        cap=global_candidate_cap,
+                        score_fn=_candidate_proxy,
+                    )
+                    post_cap_count = len(merged)
+                    rsmrq_merged_post_cap.append(post_cap_count)
+                    if pre_cap_count > post_cap_count:
+                        rsmrq_cap_hits += 1
             else:
                 # 基线模式下只使用第一个桶。
                 b = buckets[0] if buckets else []
@@ -646,16 +716,26 @@ def ppf_register(
         # 清空 KDE 样本缓存。
         samples.clear()
 
-    # 先做 pose selection，再做姿态模式聚类；若失败则回退到旧逻辑。
+    # 记录 PPF 前端耗时，并开始后端计时。
+    ppf_frontend_time = time.perf_counter() - t_frontend_start
+    t_backend_start = time.perf_counter()
+
+    # 后端：按显式 final_pose_policy 选择最终姿态路径。
     pose_selection_debug = {}
     pose_cluster_debug = {}
-
-    # 初始化最终姿态。
     T_final = None
-
-    # 先在候选姿态上做 multi-cue pose selection + top-k light refine。
     selected_hypotheses = []
-    if enable_pose_selection and len(voted_poses) > 0:
+
+    need_selected = final_pose_policy in (
+        "selected_top1",
+        "selected_plus_mode_cluster",
+    ) or (
+        final_pose_policy == "auto" and enable_pose_selection
+    )
+
+    # 若当前策略需要 pose selection，则先生成候选并做多线索重评分。
+    if need_selected and len(voted_poses) > 0:
+        t_sel = time.perf_counter()
         selected_hypotheses, pose_selection_debug = select_pose_hypotheses(
             voted_poses=voted_poses,
             model_pts=model.pts,
@@ -664,6 +744,7 @@ def ppf_register(
             cfg=cfg,
             logger=logger,
         )
+        pose_selection_time += time.perf_counter() - t_sel
 
         # 若存在对称信息，则把它透传给 pose selection 产生的 hypotheses。
         if symmetry_meta is not None:
@@ -685,9 +766,36 @@ def ppf_register(
                 f"best_inlier={pose_selection_debug.get('best_inlier_ratio', 0.0):.4f}"
             )
 
-    # 若 pose selection 成功产生候选，则优先用这些候选做模式聚类或直接选第一名。
-    if len(selected_hypotheses) > 0:
-        if enable_pose_clustering:
+    # 显式策略 1：强制走 legacy cluster。
+    if final_pose_policy == "legacy_cluster":
+        t_leg = time.perf_counter()
+        best = cluster_poses(voted_poses, pos_thresh, rot_thresh_rad)
+        legacy_clustering_time += time.perf_counter() - t_leg
+        T_final = best[0].T if best else np.eye(4, dtype=float)
+        final_pose_path = "legacy_cluster"
+
+    # 显式策略 2：直接输出 raw vote top-1。
+    elif final_pose_policy == "raw_top1_vote":
+        if len(voted_poses) > 0:
+            best_v = max(voted_poses, key=lambda x: float(x.votes))
+            T_final = best_v.T
+        else:
+            T_final = np.eye(4, dtype=float)
+        final_pose_path = "raw_top1_vote"
+
+    # 显式策略 3：输出 pose selection 后的 top-1。
+    elif final_pose_policy == "selected_top1":
+        if len(selected_hypotheses) > 0:
+            T_final = selected_hypotheses[0].T
+            final_pose_path = "selected_top1"
+        else:
+            T_final = np.eye(4, dtype=float)
+            final_pose_path = "selected_top1_empty"
+
+    # 显式策略 4：pose selection + mode clustering。
+    elif final_pose_policy == "selected_plus_mode_cluster":
+        if len(selected_hypotheses) > 0:
+            t_pc = time.perf_counter()
             best_cluster, clusters_pc, pose_cluster_debug = cluster_pose_hypotheses(
                 selected_hypotheses,
                 pos_thresh=pose_cluster_pos_thresh,
@@ -698,6 +806,7 @@ def ppf_register(
                 mean_weight=pose_cluster_mean_weight,
                 max_weight=pose_cluster_max_weight,
             )
+            pose_clustering_time += time.perf_counter() - t_pc
 
             if logger:
                 logger.info(
@@ -712,57 +821,130 @@ def ppf_register(
 
             if best_cluster is not None:
                 T_final = best_cluster.T_rep
+                final_pose_path = "selected_plus_mode_cluster"
+            else:
+                T_final = selected_hypotheses[0].T
+                final_pose_path = "selected_plus_mode_cluster_fallback_selected_top1"
         else:
-            T_final = selected_hypotheses[0].T
+            T_final = np.eye(4, dtype=float)
+            final_pose_path = "selected_plus_mode_cluster_empty"
 
-    # 若新逻辑未得到结果，则回退到原始姿态聚类。
-    if T_final is None and enable_pose_clustering and len(voted_poses) > 0:
-        # 若存在对称信息，则直接构造带 meta 的 hypotheses；否则保持原逻辑。
-        if symmetry_meta is not None:
-            hypos = hypotheses_from_matrices(
-                pose_mats=[vp.T for vp in voted_poses],
-                scores=[float(getattr(vp, "votes", 1.0)) for vp in voted_poses],
-                metas=[dict(symmetry_meta) for _ in voted_poses],
+    # auto：保留原逻辑，兼容旧配置。
+    elif final_pose_policy == "auto":
+        # 若 pose selection 成功产生候选，则优先用这些候选做模式聚类或直接选第一名。
+        if len(selected_hypotheses) > 0:
+            if enable_pose_clustering:
+                t_pc = time.perf_counter()
+                best_cluster, clusters_pc, pose_cluster_debug = cluster_pose_hypotheses(
+                    selected_hypotheses,
+                    pos_thresh=pose_cluster_pos_thresh,
+                    rot_thresh_rad=pose_cluster_rot_thresh_rad,
+                    min_cluster_size=pose_cluster_min_size,
+                    merge_by_score=pose_cluster_merge_by_score,
+                    size_weight=pose_cluster_size_weight,
+                    mean_weight=pose_cluster_mean_weight,
+                    max_weight=pose_cluster_max_weight,
+                )
+                pose_clustering_time += time.perf_counter() - t_pc
+
+                if logger:
+                    logger.info(
+                        "[PoseClustering] "
+                        f"enabled={enable_pose_clustering} "
+                        f"num_hypotheses={pose_cluster_debug.get('num_hypotheses', 0)} "
+                        f"num_clusters={pose_cluster_debug.get('num_clusters', 0)} "
+                        f"best_cluster_size={pose_cluster_debug.get('best_cluster_size', 0)} "
+                        f"best_cluster_score_sum={pose_cluster_debug.get('best_cluster_score_sum', 0.0):.3f} "
+                        f"best_cluster_mode_score={pose_cluster_debug.get('best_cluster_mode_score', 0.0):.4f}"
+                    )
+
+                if best_cluster is not None:
+                    T_final = best_cluster.T_rep
+                    final_pose_path = "auto_selected_plus_mode_cluster"
+                else:
+                    T_final = selected_hypotheses[0].T
+                    final_pose_path = "auto_selected_top1_fallback"
+            else:
+                T_final = selected_hypotheses[0].T
+                final_pose_path = "auto_selected_top1"
+
+        # 若新逻辑未得到结果，则回退到原始姿态聚类。
+        if T_final is None and enable_pose_clustering and len(voted_poses) > 0:
+            # 若存在对称信息，则直接构造带 meta 的 hypotheses；否则保持原逻辑。
+            if symmetry_meta is not None:
+                hypos = hypotheses_from_matrices(
+                    pose_mats=[vp.T for vp in voted_poses],
+                    scores=[float(getattr(vp, "votes", 1.0)) for vp in voted_poses],
+                    metas=[dict(symmetry_meta) for _ in voted_poses],
+                )
+            else:
+                hypos = hypotheses_from_posewithvotes(voted_poses)
+
+            t_pc = time.perf_counter()
+            best_cluster, clusters_pc, pose_cluster_debug = cluster_pose_hypotheses(
+                hypos,
+                pos_thresh=pose_cluster_pos_thresh,
+                rot_thresh_rad=pose_cluster_rot_thresh_rad,
+                min_cluster_size=pose_cluster_min_size,
+                merge_by_score=pose_cluster_merge_by_score,
+                size_weight=pose_cluster_size_weight,
+                mean_weight=pose_cluster_mean_weight,
+                max_weight=pose_cluster_max_weight,
             )
-        else:
-            hypos = hypotheses_from_posewithvotes(voted_poses)
+            pose_clustering_time += time.perf_counter() - t_pc
 
-        best_cluster, clusters_pc, pose_cluster_debug = cluster_pose_hypotheses(
-            hypos,
-            pos_thresh=pose_cluster_pos_thresh,
-            rot_thresh_rad=pose_cluster_rot_thresh_rad,
-            min_cluster_size=pose_cluster_min_size,
-            merge_by_score=pose_cluster_merge_by_score,
-            size_weight=pose_cluster_size_weight,
-            mean_weight=pose_cluster_mean_weight,
-            max_weight=pose_cluster_max_weight,
-        )
+            if logger:
+                logger.info(
+                    "[PoseClustering][FallbackRawVotes] "
+                    f"num_hypotheses={pose_cluster_debug.get('num_hypotheses', 0)} "
+                    f"num_clusters={pose_cluster_debug.get('num_clusters', 0)} "
+                    f"best_cluster_mode_score={pose_cluster_debug.get('best_cluster_mode_score', 0.0):.4f}"
+                )
 
-        if logger:
-            logger.info(
-                "[PoseClustering][FallbackRawVotes] "
-                f"num_hypotheses={pose_cluster_debug.get('num_hypotheses', 0)} "
-                f"num_clusters={pose_cluster_debug.get('num_clusters', 0)} "
-                f"best_cluster_mode_score={pose_cluster_debug.get('best_cluster_mode_score', 0.0):.4f}"
-            )
+            if best_cluster is not None:
+                T_final = best_cluster.T_rep
+                final_pose_path = "auto_raw_votes_pose_cluster"
 
-        if best_cluster is not None:
-            T_final = best_cluster.T_rep
+        # 若姿态聚类仍未得到结果，则回退到最原始的 cluster_poses。
+        if T_final is None:
+            t_leg = time.perf_counter()
+            best = cluster_poses(voted_poses, pos_thresh, rot_thresh_rad)
+            legacy_clustering_time += time.perf_counter() - t_leg
+            T_final = best[0].T if best else np.eye(4, dtype=float)
+            final_pose_path = "auto_legacy_cluster"
 
-    # 若姿态聚类仍未得到结果，则回退到最原始的 cluster_poses。
-    if T_final is None:
-        best = cluster_poses(voted_poses, pos_thresh, rot_thresh_rad)
-        T_final = best[0].T if best else np.eye(4, dtype=float)
+    else:
+        raise ValueError(f"Unknown final_pose_policy: {final_pose_policy}")
 
-    # 汇总调试信息。
+    # 汇总细粒度耗时和调试信息。
+    backend_time = time.perf_counter() - t_backend_start
     debug = {
         "candidate_inflation_mean": float(np.mean(candidate_inflations)) if candidate_inflations else 1.0,
+        "rsmrq": {
+            "global_candidate_cap": global_candidate_cap,
+            "cap_hit_count": int(rsmrq_cap_hits),
+            "cap_hit_ratio": float(rsmrq_cap_hits) / max(1, len(rsmrq_merged_pre_cap)),
+            "merged_candidates_pre_cap_mean": (
+                float(np.mean(rsmrq_merged_pre_cap)) if rsmrq_merged_pre_cap else 0.0
+            ),
+            "merged_candidates_post_cap_mean": (
+                float(np.mean(rsmrq_merged_post_cap)) if rsmrq_merged_post_cap else 0.0
+            ),
+        } if enable_rsmrq else {},
         "robust_vote": rv_stats.summary() if enable_robust else {},
         "kde_refine_calls": kde_calls,
         "pose_selection": pose_selection_debug,
         "pose_clustering": pose_cluster_debug,
+        "timing": {
+            "ppf_frontend_time": float(ppf_frontend_time),
+            "pose_selection_time": float(pose_selection_time),
+            "pose_clustering_time": float(pose_clustering_time),
+            "legacy_clustering_time": float(legacy_clustering_time),
+            "backend_time": float(backend_time),
+        },
+        "final_pose_policy": final_pose_policy,
+        "final_pose_path": final_pose_path,
     }
-
 
     # 返回最终位姿和调试信息。
     return T_final, debug
@@ -897,7 +1079,11 @@ def run_registration(
 
 
     # 对场景点云做预处理并执行注册。
+    scene_preprocess_time = 0.0
     with Timer("registration", logger=logger) as tr:
+        # 单独记录 scene 预处理耗时。
+        t_scene_pre = time.perf_counter()
+
         # 若启用自适应且 apply_to 包含 scene，则对 scene 使用自适应预处理。
         if adaptive_downsample and adaptive_apply_to in ("scene", "both"):
             scene_down, scene_ds_info = adaptive_subsample_and_calculate_normals_scene(
@@ -923,6 +1109,8 @@ def run_registration(
                 "apply_to": adaptive_apply_to,
             }
 
+        scene_preprocess_time = time.perf_counter() - t_scene_pre
+
         # 记录调试日志，便于你核查每个样本是否真的被自适应控制了。
         if logger:
             logger.info(f"[AdaptiveDS][model] {model_ds_info}")
@@ -934,6 +1122,16 @@ def run_registration(
         # 将下采样调试信息附加到 debug 中，方便后续写 json 或日志时分析。
         debug["model_downsample"] = model_ds_info
         debug["scene_downsample"] = scene_ds_info
+
+        # 读取细粒度 timing 与最终姿态路径信息。
+        timing_debug = debug.get("timing", {}) if isinstance(debug, dict) else {}
+        ppf_frontend_time = float(timing_debug.get("ppf_frontend_time", 0.0))
+        pose_selection_time = float(timing_debug.get("pose_selection_time", 0.0))
+        pose_clustering_time = float(timing_debug.get("pose_clustering_time", 0.0))
+        legacy_clustering_time = float(timing_debug.get("legacy_clustering_time", 0.0))
+        backend_time = float(timing_debug.get("backend_time", 0.0))
+        final_pose_policy = str(debug.get("final_pose_policy", cfg_runtime.get("final_pose_policy", "auto")))
+        final_pose_path = str(debug.get("final_pose_path", ""))
 
     # 按需在下采样点云上执行 ICP 精修。
     icp_cfg = cfg.get("icp_refine", {})
@@ -988,7 +1186,15 @@ def run_registration(
         total_time=total_time,
         candidate_inflation_mean=float(debug.get("candidate_inflation_mean", 1.0)),
         robust_vote_summary=debug.get("robust_vote", {}),
-        kde_refine_calls=int(debug.get("kde_refine_calls", 0))
+        kde_refine_calls=int(debug.get("kde_refine_calls", 0)),
+        scene_preprocess_time=float(scene_preprocess_time),
+        ppf_frontend_time=float(ppf_frontend_time),
+        pose_selection_time=float(pose_selection_time),
+        pose_clustering_time=float(pose_clustering_time),
+        legacy_clustering_time=float(legacy_clustering_time),
+        backend_time=float(backend_time),
+        final_pose_policy=final_pose_policy,
+        final_pose_path=final_pose_path,
     )
 
     # 返回预测位姿、变换后的模型点云、调试信息和统计信息。

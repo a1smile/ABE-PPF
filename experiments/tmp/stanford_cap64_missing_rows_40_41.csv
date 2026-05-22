@@ -1,0 +1,3 @@
+﻿"scene_id","scene_name","scene_variant","pcd_path","obj_id","expected_obj_id","expected_model_path","gt_path","config_path","model_name","gt_threshold"
+"13","Scene13","0.3","data/stanford_bunny_ppf/scenes/Scene13_0.3.ply","2","2","data/stanford_bunny_ppf/models/dragon_vrip_res2_0.ply","data/stanford_bunny_ppf/scenes/Scene13-rs0.xf","configs/stanford_retrieval/ConfigScene13.ini","dragon_vrip_res2_0.ply","1"
+"13","Scene13","0.5","data/stanford_bunny_ppf/scenes/Scene13_0.5.ply","2","2","data/stanford_bunny_ppf/models/dragon_vrip_res2_0.ply","data/stanford_bunny_ppf/scenes/Scene13-rs0.xf","configs/stanford_retrieval/ConfigScene13.ini","dragon_vrip_res2_0.ply","1"

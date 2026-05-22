@@ -1,0 +1,2 @@
+idx,scene_name,scene_variant,obj_id,ADD,rotation_error_deg,registration_time,ppf_frontend_time,adaptive_used_upgrade,adaptive_trigger_reason
+41,Scene13,0.5,2,0.006948798253743954,5.854678734113987,37.2120386000006,36.20684469999833,True,low_best_score

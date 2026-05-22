@@ -277,8 +277,19 @@ def process_one(task):
                 "model_build_time": float(stats.model_build_time),
                 "registration_time": float(stats.registration_time),
                 "total_time": float(stats.total_time),
+
+                "scene_preprocess_time": float(getattr(stats, "scene_preprocess_time", 0.0)),
+                "ppf_frontend_time": float(getattr(stats, "ppf_frontend_time", 0.0)),
+                "pose_selection_time": float(getattr(stats, "pose_selection_time", 0.0)),
+                "pose_clustering_time": float(getattr(stats, "pose_clustering_time", 0.0)),
+                "legacy_clustering_time": float(getattr(stats, "legacy_clustering_time", 0.0)),
+                "backend_time": float(getattr(stats, "backend_time", 0.0)),
+
                 "candidate_inflation_mean": float(stats.candidate_inflation_mean),
                 "kde_refine_calls": int(stats.kde_refine_calls),
+
+                "final_pose_policy": str(getattr(stats, "final_pose_policy", "auto")),
+                "final_pose_path": str(getattr(stats, "final_pose_path", "")),
             },
             "metrics": m,
             "debug": debug,
@@ -304,7 +315,8 @@ def main():
     ap = argparse.ArgumentParser(description="Batch runner for Stanford CSV datasets with per-model cache reuse.")
     ap.add_argument("--config", type=str, default="configs/ablation_ours.yaml")
     ap.add_argument("--csv", type=str, required=True)
-    ap.add_argument("--models_dir", type=str, default="", help="Fallback model directory when CSV has no explicit model path.")
+    ap.add_argument("--models_dir", type=str, default="",
+                    help="Fallback model directory when CSV has no explicit model path.")
     ap.add_argument("--cache_dir", type=str, default="data/stanford_bunny_ppf/model_cache")
     ap.add_argument("--rebuild_cache", action="store_true")
     ap.add_argument("--out_prefix", type=str, default="stanford_batch_cached")
@@ -360,18 +372,17 @@ def main():
     logger.info(f"Inlier radius: {float(args.inlier_radius)}")
 
     built_cache_records = []
-    for model_path, cache_path in tqdm(unique_models.items(), total=len(unique_models), desc="BuildCache", unit="model"):
+    for model_path, cache_path in tqdm(unique_models.items(), total=len(unique_models), desc="BuildCache",
+                                       unit="model"):
         build_or_load_model_cache(model_path, cache_path, cfg, logger=logger, rebuild=bool(args.rebuild_cache))
         built_cache_records.append({"model_path": model_path, "cache_path": cache_path})
 
     results = []
     failures = []
-    with Pool(
-        processes=int(args.num_workers),
-        initializer=init_worker,
-        initargs=(cfg, run_dir, logger, args.inlier_radius),
-    ) as pool:
-        for ret in tqdm(pool.imap_unordered(process_one, rows), total=len(rows), desc="Processing", unit="task"):
+    if int(args.num_workers) <= 1:
+        init_worker(cfg, run_dir, logger, args.inlier_radius)
+        for task in tqdm(rows, total=len(rows), desc="Processing", unit="task"):
+            ret = process_one(task)
             if ret["ok"]:
                 results.append(ret["record"])
             else:
@@ -379,6 +390,20 @@ def main():
                 logger.error(f"[{ret['idx']}] failed: {ret.get('error', 'unknown error')}")
                 if ret.get("traceback"):
                     logger.error(ret["traceback"])
+    else:
+        with Pool(
+                processes=int(args.num_workers),
+                initializer=init_worker,
+                initargs=(cfg, run_dir, logger, args.inlier_radius),
+        ) as pool:
+            for ret in tqdm(pool.imap_unordered(process_one, rows), total=len(rows), desc="Processing", unit="task"):
+                if ret["ok"]:
+                    results.append(ret["record"])
+                else:
+                    failures.append(ret)
+                    logger.error(f"[{ret['idx']}] failed: {ret.get('error', 'unknown error')}")
+                    if ret.get("traceback"):
+                        logger.error(ret["traceback"])
 
     results.sort(key=lambda x: x["idx"])
 

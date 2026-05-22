@@ -1,4 +1,16 @@
-# 将注册主入口导出到包级别，便于外部直接通过 ppf.run_registration 调用。
-from .registration import run_registration
-# 将模型构建函数导出到包级别，便于外部直接通过 ppf.build_ppf_model 调用。
-from .model_builder import build_ppf_model
+run_registration = None
+build_ppf_model = None
+
+try:
+    from .registration import run_registration
+except ModuleNotFoundError as exc:
+    if exc.name != "open3d":
+        raise
+
+try:
+    from .model_builder import build_ppf_model
+except ModuleNotFoundError as exc:
+    if exc.name != "open3d":
+        raise
+
+__all__ = ["run_registration", "build_ppf_model"]

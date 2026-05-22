@@ -380,3 +380,5 @@ python scripts/run_batch.py --csv "C:\Users\D1519\Desktop\ppf_research_project\s
 - baseline 为 Open3D 风格 PPF 实现；
 - 当前主方法为基于 PPF 的三阶段鲁棒位姿估计框架；
 - KDE 只作为对照消融而非默认主方法。
+#   A B E - P P F  
+ 

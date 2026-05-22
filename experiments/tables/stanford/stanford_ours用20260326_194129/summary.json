@@ -1,0 +1,14 @@
+{
+  "config_path": "C:\\Users\\D1519\\Desktop\\ppf_research_project\\configs/ablation_ours_stanford.yaml",
+  "csv_path": "C:\\Users\\D1519\\Desktop\\ppf_research_project\\stanford_retrieval_batch_all_variants.csv",
+  "models_dir": "",
+  "cache_dir": "C:\\Users\\D1519\\Desktop\\ppf_research_project\\data/stanford_bunny_ppf/model_cache",
+  "total_tasks": 54,
+  "unique_models": 6,
+  "success_count": 54,
+  "failure_count": 0,
+  "num_workers": 8,
+  "result_json": "experiments/results\\stanford_retrieval_cached_20260326_194129\\results\\stanford_retrieval_cached_batch.json",
+  "log_path": "experiments/results\\stanford_retrieval_cached_20260326_194129\\logs\\stanford_retrieval_cached.log",
+  "script": "run_batch_stanford_cached.py"
+}
