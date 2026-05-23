@@ -42,37 +42,13 @@ All Stage 0B docs committed (ea0f5b3). ABEPPF.md and .claude/agents committed (5
 
 ---
 
-## Stage 1B: UBSP on/off Ablation
+## Stage 1B: UBSP on/off Ablation ✅ COMPLETE
 
-**Rationale**: UBSP is always enabled; no on/off comparison exists. Need to isolate UBSP's contribution.
+**Result**: UBSP ON vs OFF on both datasets. Stanford: 14→12 (−2, −11.1pp, happy_vrip_res3_0 variants 0.3/0.5). LMO: 17→16 (−1, −3.1pp, obj_000011_f1). UBSP time cost negligible (~0.04s). No false matches introduced. UBSP is a validated innovation — evidence level strong.
 
-### Task 1B-1: Create UBSP-off Stanford config
+**Configs created**: `configs/stanford_expanded_no_ubsp.yaml`, `configs/lmo_expanded_no_ubsp.yaml`
 
-- **Assign to**: @flash-executor
-- **Goal**: Create `configs/stanford_expanded_no_ubsp.yaml` by copying `stanford_expanded.yaml` and setting `use_ubsp: false`
-- **Allowed files**: `configs/stanford_expanded_no_ubsp.yaml` (new file)
-- **Forbidden**: Modifying any source code or existing config
-- **Verify**: File exists and contains `use_ubsp: false`
-
-### Task 1B-2: Create UBSP-off LMO config
-
-- **Assign to**: @flash-executor
-- **Goal**: Create `configs/lmo_expanded_no_ubsp.yaml` by copying `lmo_expanded.yaml` and setting `use_ubsp: false`
-- **Allowed files**: `configs/lmo_expanded_no_ubsp.yaml` (new file)
-- **Forbidden**: Modifying any source code or existing config
-- **Verify**: File exists and contains `use_ubsp: false`
-
-### Task 1B-3: Run UBSP-off on Stanford
-
-- **Assign to**: @flash-evaluator
-- **Goal**: Run `python scripts/run_stanford_small.py --config configs/stanford_expanded_no_ubsp.yaml`
-- **Compare**: vs EXP-007 Stanford (14/18, 1.156s)
-
-### Task 1B-4: Run UBSP-off on LMO
-
-- **Assign to**: @flash-evaluator
-- **Goal**: Run `python scripts/run_lmo_small.py --config configs/lmo_expanded_no_ubsp.yaml`
-- **Compare**: vs EXP-007 LMO (17/32, 1.197s)
+**Recommendation**: Keep UBSP ON in all production configs.
 
 ---
 

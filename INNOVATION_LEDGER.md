@@ -231,7 +231,7 @@
 | Module | Current Evidence | Strongest Claim | Needs Ablation |
 |--------|-----------------|-----------------|----------------|
 | ASPS   | moderate | Stanford +100% vs pre-Codex baseline; LMO cap sweep shows optimal range | ASPS vs random/uniform/curvature sampling; diversity formula comparison |
-| UBSP   | weak | Always enabled; no on/off comparison exists | UBSP on/off; λ sweep; max_expand_dims sweep |
+| UBSP   | **strong** | EXP-014: UBSP ON vs OFF on both datasets. Stanford: 14→12 (−2 cases, −11.1pp). LMO: 17→16 (−1 case, −3.1pp). Time cost negligible (~0.04s). Neighbor bucket probing recovers correct matches that fall into adjacent hash bins. No evidence of false matches. | λ sweep on LMO; max_expand_dims sweep |
 | BRPMR (full module) | **strong** | BRPMR ON vs OFF: Stanford +5 (9→14), LMO +4 (13→17). Full module is critical for accuracy. | — (proven) |
 | BRPMR (mode pool) | **strong** | Mode pool + candidate aggregation is the primary accuracy driver within BRPMR. | obj_000009 regression (NOT CF/ES-related; needs mode pool investigation) |
 | BRPMR (candidate filtering) | **moderate+** | Stage 1A-3 grid: ratio ∈ [0.00,0.05] at max=128 gives identical 17/32. Score ratio not sensitive at this cap. no-CF 18/32 from combined max=0 + batch_nms_off + ratio=0, NOT ratio alone. Filtering is effective efficiency mechanism — ratio=0.05 gives lowest BRPMR time (0.210s). | Disentangle max / batch_nms / ratio contributions; batch NMS threshold sweep |

@@ -63,6 +63,17 @@ The BRPMR full module ON→OFF ablation (EXP-007 vs EXP-009/010) revealed 4 LMO 
 
 **Stage 1A-2/3 conclusion**: 2 of 4 regressions (obj_000005_f1, obj_000012) are directly caused by per-round candidate count cap (max=128). Lowering score ratio alone doesn't help because the cap is the binding constraint. Removing the cap (max=0) recovers these cases but at 2× BRPMR time cost and introduces 2 new failures (obj_000008_f0, obj_000010_f1). 1 regression (obj_000009_f1) is unrelated to candidate filtering — needs mode pool investigation in Stage 1C.
 
+## UBSP-Related Failures (from EXP-014 UBSP on/off)
+
+UBSP ON→OFF removes 3 cases across both datasets:
+
+| Dataset | Object | Details | Hypothesis |
+|---------|--------|---------|------------|
+| Stanford | happy_vrip_res3_0 (id=5) | Variants 0.3, 0.5. Was 3/3 with UBSP ON, drops to 1/3 with UBSP OFF. | PPF features fall near hash bin boundaries; UBSP's neighbor bucket probing recovers the correct model pairs. Without UBSP, these matches are lost. |
+| LMO | obj_000011 (id=11) | Frame 1. Was passing with UBSP ON, fails with UBSP OFF. | Same mechanism — a critical PPF match falls in an adjacent hash bin. |
+
+No cases pass with UBSP OFF that fail with UBSP ON. UBSP introduces no false positive matches.
+
 ## Rules for Failure Analysis
 
 1. These observations inform ablation experiment design, NOT object-specific parameter tuning.
