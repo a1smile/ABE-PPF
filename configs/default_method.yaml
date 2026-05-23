@@ -1,0 +1,117 @@
+method:
+  use_asps: true
+  use_ubsp: true
+  use_brpmr: true
+
+seed: 0
+sampling_leaf: 0.004
+normal_k: 10
+angle_step_deg: 12.0
+distance_step_ratio: 0.6
+adaptive_downsample: true
+adaptive_downsample_apply_to: both
+adaptive_downsample_cfg:
+  no_downsample_thresh: 450
+  mid_thresh: 1500
+  large_thresh: 3000
+  target_mid: 500
+  target_large: 450
+  target_xlarge: 400
+  search_steps: 12
+  voxel_min: 0.0001
+  voxel_max_scale: 0.2
+
+scene_pair_cap_per_reference: 96
+scene_pair_radius_ratio: 0.5
+inlier_radius: 0.008
+success_threshold: 0.02
+cache_dir: outputs/model_cache
+
+asps:
+  top_m_reference_points: 64
+  min_selected_points: 0
+  max_scored_candidates: 0
+  pre_sample_pairs: 32
+  matching_pair_cap_per_reference: 0
+  alpha: 1.0
+  beta: 0.5
+  normal_stability_threshold: 0.6
+  voxel_nms_size: 0.01
+  pair_radius_ratio: 0.5
+  knn: 12
+  coarse_neighbor_weight: 0.0
+  matching_pair_reliability_weight: 0.65
+  matching_pair_ambiguity_weight: 0.35
+  seed: 0
+
+ubsp:
+  lambda: 0.2
+  max_expand_dims: 2
+  sigma_max_distance: 0.02
+  sigma_max_angle: 0.4
+  position_sigma_scale: 0.2
+  normal_sigma_scale: 0.3
+  distance_coupling_scale: 0.15
+  boundary_fraction_max: 0.05
+  max_bucket_size: 500
+
+voting:
+  candidate_bins_per_model_ref: 1
+  max_candidates_per_batch: 64
+  max_candidates_per_reference: 16
+  min_vote_score: 0.0
+  min_support_pair_count: 2
+  relative_score_threshold: 0.15
+  bucket_score_scale: 0.35
+
+brpmr:
+  batch_size_reference_points: 16
+  max_budget_pairs: 4000
+  low_evidence_reference_threshold: 0
+  low_evidence_refine_iterations: 0
+  low_evidence_refine_distance: 0.0
+  max_candidates_per_round: 64
+  candidate_score_ratio: 0.15
+  batch_nms_translation: 0.03
+  batch_nms_rotation: 12.0
+  candidate_support_pair_weight: 0.15
+  tau_t: 0.02
+  tau_R: 12.0
+  tau_t_merge: 0.03
+  tau_R_merge: 12.0
+  tau_margin: 0.25
+  tau_entropy: 0.99
+  tau_compactness: 0.6
+  tau_coverage: 0.3
+  tau_marginal_gain: 1.0e-4
+  trend_window: 2
+  tau_margin_growth: 0.03
+  tau_coverage_growth: 0.02
+  min_rounds_before_stop: 2
+  min_support_points_for_stop: 0
+  recent_history_size: 5
+  max_modes: 256
+  min_mode_score_ratio: 0.05
+  heavy_branch_reference_threshold: 0
+  heavy_branch_candidate_threshold: 0
+  heavy_branch_mode_threshold: 0
+  heavy_branch_round_threshold: 0
+  heavy_branch_decay: 1.0
+  heavy_branch_min_candidate_cap: 0
+  heavy_branch_min_mode_cap: 0
+  heavy_branch_score_ratio_boost: 0.0
+  heavy_branch_min_mode_score_ratio_boost: 0.0
+  heavy_branch_stop_min_round: 0
+  heavy_branch_tau_margin: 0.0
+  heavy_branch_tau_coverage: 0.0
+  heavy_branch_tau_entropy: 1.0
+  heavy_branch_tau_compactness: 0.0
+  heavy_branch_tau_margin_drift: 1.0
+  heavy_branch_min_support_points: 0
+  heavy_branch_mode_saturation_ratio: 0.0
+
+backend:
+  pose_refinement:
+    enable: false
+    max_iterations: 10
+    max_correspondence_distance: 0.008

@@ -1,0 +1,14 @@
+stage1_config: configs/LMO/ablation_no_rsmrq_lmo.yaml
+stage2_config: configs/LMO/ablation_ours_lmo.yaml
+stage1_method_name: no_rsmrq
+stage2_method_name: ours_full
+adaptive_trigger_thresholds:
+  best_score: 0.72
+  top_score_margin: 0.02
+  best_visibility_support: 0.28
+output:
+  root: experiments
+  results_dir: experiments/results
+  logs_dir: experiments/logs
+  tables_dir: experiments/tables
+  figures_dir: experiments/figures
