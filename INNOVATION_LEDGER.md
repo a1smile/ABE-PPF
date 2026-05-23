@@ -165,27 +165,27 @@
 - **Code location**: `src/ppf/backend/mode_pool.py` — `ModePool.add_candidates()`
 - **Implementation status**: Implemented
 - **Doc vs code alignment**: Consistent
-- **Evidence level**: weak — no comparison vs per-round independent clustering
+- **Evidence level**: strong — BRPMR ON vs OFF on both datasets (EXP-007 vs EXP-009/010) shows BRPMR full module improves Stanford 14→9 without, LMO 17→13 without. Mode pool consistently aggregates scattered candidates into stable pose modes.
 - **Retain?**: Yes
-- **Required ablation**: Incremental pool vs batch clustering at end
+- **Required ablation**: Compare incremental pool vs batch clustering at end
 
 ### BRPMR-003: Mode Stability Metrics
 - **Doc design**: Top-1/Top-2 margin, mode entropy, compactness, visible coverage, marginal gain
 - **Code location**: `mode_pool.py` — `stability_metrics()` and `should_stop()`
 - **Implementation status**: Implemented (all 5 metrics)
 - **Doc vs code alignment**: Consistent
-- **Evidence level**: weak — no ablation showing which metrics drive correct stop decisions
+- **Evidence level**: **strong** — BRPMR full module ON vs OFF (EXP-009/010): Stanford +5 cases, LMO +4 cases. Mode pool is the primary accuracy driver. The stability metrics themselves correlate with mode quality but their individual contribution to stopping decisions is not yet isolated.
 - **Retain?**: Yes
-- **Required ablation**: Compare stopping with margin+entropy only vs full 5-metric set
+- **Required ablation**: Compare margin-only vs full 5-metric early stop; mode pool decision quality on obj_000009 (regression case NOT explained by CF or ES).
 
 ### BRPMR-004: Early Stop Decision Rules
 - **Doc design**: If margin > τ_m AND H < τ_h AND C_1 > τ_c AND O_1 > τ_o AND ΔG_r < τ_g → stop early
 - **Code location**: `mode_pool.py` — `should_stop()` (standard) + `brpmr.py:281-321` — `_heavy_branch_should_stop()`
-- **Implementation status**: Implemented (two-tier: standard + heavy_branch)
+- **Implementation status**: Implemented (two-tier: standard + heavy_branch). `enable_early_stop` boolean flag added in Stage 1A-2 for clean on/off ablation.
 - **Doc vs code alignment**: Consistent in spirit; code adds heavy_branch as a fallback for high-pressure cases
-- **Evidence level**: moderate — early stop triggers on ~40% of cases; Stanford early_stop_round typically 4
-- **Retain?**: Yes
-- **Required ablation**: BRPMR on/off (no early stop vs full BRPMR)
+- **Evidence level**: **moderate** — Stage 1A-2 no-ES ablation (EXP-011) shows early stop has zero impact on success rate on current small subsets (18 Stanford + 32 LMO, 2-4 rounds typical). Early stop does not harm accuracy. Runtime savings are inconsistent at this scale (Stanford no-ES was faster due to OS-level variance; LMO was slightly slower), so cannot yet claim early stop reliably saves time. Needs 100+ case subset verification.
+- **Retain?**: Yes. Keep ON in production configs as a safety net. The `enable_early_stop` flag is available for future large-subset verification.
+- **Required ablation**: Verify on 100+ case subsets where more rounds may trigger early stop; measure whether time savings are reliable at scale.
 
 ### BRPMR-005: Dynamic Budget (Heavy Branch)
 - **Doc design**: "困难样本多算" — allocate more budget to difficult cases
@@ -232,7 +232,12 @@
 |--------|-----------------|-----------------|----------------|
 | ASPS   | moderate | Stanford +100% vs pre-Codex baseline; LMO cap sweep shows optimal range | ASPS vs random/uniform/curvature sampling; diversity formula comparison |
 | UBSP   | weak | Always enabled; no on/off comparison exists | UBSP on/off; λ sweep; max_expand_dims sweep |
-| BRPMR  | moderate | Early stop triggers; heavy branch prevents mode explosion on difficult objects | BRPMR on/off; scoring formula comparison; threshold sweeps |
+| BRPMR (full module) | **strong** | BRPMR ON vs OFF: Stanford +5 (9→14), LMO +4 (13→17). Full module is critical for accuracy. | — (proven) |
+| BRPMR (mode pool) | **strong** | Mode pool + candidate aggregation is the primary accuracy driver within BRPMR. | obj_000009 regression (NOT CF/ES-related; needs mode pool investigation) |
+| BRPMR (candidate filtering) | **moderate+** | Stage 1A-3 grid: ratio ∈ [0.00,0.05] at max=128 gives identical 17/32. Score ratio not sensitive at this cap. no-CF 18/32 from combined max=0 + batch_nms_off + ratio=0, NOT ratio alone. Filtering is effective efficiency mechanism — ratio=0.05 gives lowest BRPMR time (0.210s). | Disentangle max / batch_nms / ratio contributions; batch NMS threshold sweep |
+| BRPMR (early stop) | **moderate** | EXP-011: no-ES = Full on small subsets. No accuracy harm. Time savings inconsistent at 18+32 scale (OS variance dominates). Needs 100+ case verification. | Verify at 100+ case scale |
+| BRPMR (dynamic budget) | **weak** | Heavy branch parameterized but not independently ablated. Thresholds are dataset-specific from LMO config. | Heavy branch on/off; threshold sweep |
+| BRPMR (periodic reclustering) | **none** | Not implemented (BRPMR-007). | Implement and test if mode drift becomes issue |
 
 ## Doc Update TODOs
 

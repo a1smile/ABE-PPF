@@ -50,6 +50,19 @@ Previously-failing objects now passing (since LMO cap/rel adjustment):
 
 3. **Stanford dragon rotation ambiguity**: dragon_vrip_res2_0 variant 0.3 works (resulting pose is correct within 12°), but 0.1 and 0.5 give ~137° rotation error — this is a 180° flip. The mode pool may be selecting a mirrored pose mode. BRPMR margin-based stopping may help if the correct mode consistently out-scores the flipped mode.
 
+## BRPMR Regression Cases (from EXP-009/010 ablation)
+
+The BRPMR full module ON→OFF ablation (EXP-007 vs EXP-009/010) revealed 4 LMO cases that **pass without BRPMR but fail with BRPMR ON**:
+
+| Object | Frame | Variant | Hypothesis | Stage 1A-2 finding | Stage 1A-3 finding |
+|--------|-------|---------|------------|---------------------|---------------------|
+| obj_000005 | 1 | 1 | BRPMR mode pool may select wrong mode | **CF-related**: passes in no-CF (EXP-012) | Not resolved by ratio calibration (baseline is optimal) |
+| obj_000009 | 1 | 4 | Candidate filtering may drop correct candidate | **NOT CF-related**: still fails in no-CF. Mode pool or early stop issue. | Not a CF issue — needs mode pool investigation |
+| obj_000012 | 0 | 7 | Mode merging may collapse distinct modes | **CF-related**: passes in no-CF (EXP-012) | Not resolved at max=128 (binding constraint). Only max=0 (full no-CF) recovers this case. |
+| obj_000012 | 3 | 7 | Same as above | **CF-related**: passes in no-CF (EXP-012) | Same — only recovered at max=0. |
+
+**Stage 1A-2/3 conclusion**: 2 of 4 regressions (obj_000005_f1, obj_000012) are directly caused by per-round candidate count cap (max=128). Lowering score ratio alone doesn't help because the cap is the binding constraint. Removing the cap (max=0) recovers these cases but at 2× BRPMR time cost and introduces 2 new failures (obj_000008_f0, obj_000010_f1). 1 regression (obj_000009_f1) is unrelated to candidate filtering — needs mode pool investigation in Stage 1C.
+
 ## Rules for Failure Analysis
 
 1. These observations inform ablation experiment design, NOT object-specific parameter tuning.

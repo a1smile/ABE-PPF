@@ -56,6 +56,7 @@ class BRPMRConfig:
     heavy_branch_tau_margin_drift: float = 1.0
     heavy_branch_min_support_points: int = 0
     heavy_branch_mode_saturation_ratio: float = 0.0
+    enable_early_stop: bool = True
 
 
 @dataclass
@@ -116,6 +117,7 @@ class BRPMRController:
                 recent_history_size=cfg.recent_history_size,
                 max_modes=cfg.max_modes,
                 min_mode_score_ratio=cfg.min_mode_score_ratio,
+                enable_early_stop=cfg.enable_early_stop,
             ),
             total_reference_points=total_reference_points,
         )
@@ -283,6 +285,8 @@ class BRPMRController:
         metrics: Dict[str, float],
         budget_profile: DynamicBudgetProfile,
     ) -> bool:
+        if not self.cfg.enable_early_stop:
+            return False
         if not budget_profile.heavy_branch_active:
             return False
 

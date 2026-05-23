@@ -29,6 +29,7 @@ class ModePoolConfig:
     min_support_points_for_stop: int = 0
     max_modes: int = 0
     min_mode_score_ratio: float = 0.0
+    enable_early_stop: bool = True
 
 
 @dataclass
@@ -384,6 +385,8 @@ class ModePool:
         return self._augment_with_trends(self._base_metrics(), self.metric_history)
 
     def should_stop(self) -> Tuple[bool, Dict[str, float]]:
+        if not self.cfg.enable_early_stop:
+            return False, self.stability_metrics()
         metrics = self.stability_metrics()
         required_window = max(2, int(self.cfg.trend_window))
         if self.round_index < int(self.cfg.min_rounds_before_stop) or int(metrics["trend_window_size"]) < required_window:

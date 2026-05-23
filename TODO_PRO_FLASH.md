@@ -5,69 +5,74 @@
 
 ---
 
-## Immediate Next: Stage 0C — Commit and Push Documentation
+## Stage 0C: Commit and Push Documentation ✅ COMPLETE
 
-**Pro task**: Commit all Stage 0B documents and push to experiment branch.
-
-- [ ] `git add` all new .md files
-- [ ] Commit with message: `docs: add Stage 0B project documentation`
-- [ ] Push to `exp/stage0-audit`
-
-**Dependencies**: Stage 0B complete (all docs created)
+All Stage 0B docs committed (ea0f5b3). ABEPPF.md and .claude/agents committed (51a9fa5). Tag stage0-complete created.
 
 ---
 
-## Stage 1 Priority: BRPMR on/off Ablation (Highest Priority)
+## Stage 1A: BRPMR Full Module Ablation ✅ COMPLETE
 
-**Rationale**: BRPMR is the easiest module to ablate — just disable early stop and run all references. This isolates BRPMR's contribution before ablating ASPS/UBSP.
+**Result**: BRPMR ON vs OFF shows module is critical for accuracy (Stanford 14→9, LMO 17→13). Mode pool + candidate filtering drive quality. Early stop triggers on 50% Stanford / 25% LMO. 4 LMO cases regress with BRPMR ON — needs component-level investigation.
 
-### Task 1A-1: Create BRPMR-off Stanford config
+**Configs created**: `configs/stanford_expanded_no_brpmr.yaml`, `configs/lmo_expanded_no_brpmr.yaml`
+
+---
+
+## Stage 1A-2: BRPMR Component Ablation ✅ COMPLETE
+
+**Result**: `enable_early_stop` switch added to ModePoolConfig and BRPMRConfig. 4 component ablation configs created. Semantic check confirms 0-value semantics are safe for candidate filtering fields (max_candidates_per_round=0, candidate_score_ratio=0.0, batch_nms_*=0.0).
+
+**Key findings**:
+- Early stop: zero impact on success rate at current subset sizes (Stanford 14/18, LMO 17/32 unchanged)
+- Candidate filtering OFF: Stanford unchanged (14/18), LMO improves to 18/32 but 2× BRPMR time. 2 of 4 regressions are CF-related (obj_000012, obj_000005). obj_000009 regression is NOT CF-related (mode pool issue).
+- Mode pool is the primary accuracy driver (+5 Stanford, +4 LMO)
+
+**Configs created**: `stanford_expanded_brpmr_no_es.yaml`, `lmo_expanded_brpmr_no_es.yaml`, `stanford_expanded_brpmr_no_cf.yaml`, `lmo_expanded_brpmr_no_cf.yaml`
+
+---
+
+## Stage 1A-3: BRPMR Candidate Filtering Calibration ✅ COMPLETE
+
+**Result**: 7-config grid search (ratio ∈ {0.00,0.02,0.03}, max ∈ {128,192,256}) + 1 baseline ref. All ratio values at max=128 give identical 17/32 success (identical failure lists). Ratio filtering is redundant for recall at max=128. Baseline (ratio=0.05, max=128) is Pareto-optimal: lowest BRPMR time (0.210s) while maintaining same success. max=192 doubles time with no benefit; max=256 degrades to 16/32.
+
+**Conclusion**: Current baseline is optimal. No parameter changes needed. Candidate filtering is an effective efficiency mechanism — ratio=0.05 provides best time/success tradeoff while max=128 prevents mode pool pollution.
+
+**Configs created**: 7 `lmo_expanded_cf_r{R}_m{M}.yaml` files in configs/
+
+---
+
+## Stage 1B: UBSP on/off Ablation
+
+**Rationale**: UBSP is always enabled; no on/off comparison exists. Need to isolate UBSP's contribution.
+
+### Task 1B-1: Create UBSP-off Stanford config
 
 - **Assign to**: @flash-executor
-- **Goal**: Create `configs/stanford_expanded_no_brpmr.yaml` by copying `stanford_expanded.yaml` and setting `use_brpmr: false`
-- **Allowed files**: `configs/stanford_expanded_no_brpmr.yaml` (new file)
+- **Goal**: Create `configs/stanford_expanded_no_ubsp.yaml` by copying `stanford_expanded.yaml` and setting `use_ubsp: false`
+- **Allowed files**: `configs/stanford_expanded_no_ubsp.yaml` (new file)
 - **Forbidden**: Modifying any source code or existing config
-- **Verify**: File exists and contains `use_brpmr: false`
+- **Verify**: File exists and contains `use_ubsp: false`
 
-### Task 1A-2: Create BRPMR-off LMO config
+### Task 1B-2: Create UBSP-off LMO config
 
 - **Assign to**: @flash-executor
-- **Goal**: Create `configs/lmo_expanded_no_brpmr.yaml` by copying `lmo_expanded.yaml` and setting `use_brpmr: false`
-- **Allowed files**: `configs/lmo_expanded_no_brpmr.yaml` (new file)
+- **Goal**: Create `configs/lmo_expanded_no_ubsp.yaml` by copying `lmo_expanded.yaml` and setting `use_ubsp: false`
+- **Allowed files**: `configs/lmo_expanded_no_ubsp.yaml` (new file)
 - **Forbidden**: Modifying any source code or existing config
-- **Verify**: File exists and contains `use_brpmr: false`
+- **Verify**: File exists and contains `use_ubsp: false`
 
-### Task 1A-3: Run BRPMR-off on Stanford
+### Task 1B-3: Run UBSP-off on Stanford
 
 - **Assign to**: @flash-evaluator
-- **Goal**: Run `python scripts/run_stanford_small.py --config configs/stanford_expanded_no_brpmr.yaml`
-- **Output**: Save result to `outputs/stanford_expanded_no_brpmr_results.json`
-- **Record**: success_rate, runtime_total, runtime_asps, runtime_brpmr, failed cases
+- **Goal**: Run `python scripts/run_stanford_small.py --config configs/stanford_expanded_no_ubsp.yaml`
 - **Compare**: vs EXP-007 Stanford (14/18, 1.156s)
 
-### Task 1A-4: Run BRPMR-off on LMO
+### Task 1B-4: Run UBSP-off on LMO
 
 - **Assign to**: @flash-evaluator
-- **Goal**: Run `python scripts/run_lmo_small.py --config configs/lmo_expanded_no_brpmr.yaml`
-- **Output**: Save result to `outputs/lmo_expanded_no_brpmr_results.json`
-- **Record**: success_rate, runtime_total, runtime_asps, runtime_brpmr, failed cases
+- **Goal**: Run `python scripts/run_lmo_small.py --config configs/lmo_expanded_no_ubsp.yaml`
 - **Compare**: vs EXP-007 LMO (17/32, 1.197s)
-
-### Task 1A-5: Audit BRPMR ablation results
-
-- **Assign to**: @flash-auditor
-- **Goal**: Compare BRPMR-on vs BRPMR-off; check if early stop saves time without hurting accuracy
-- **Update**: EXPERIMENT_REGISTRY.md with new entries
-
----
-
-## Stage 1 Next: UBSP on/off Ablation
-
-Same pattern as BRPMR ablation:
-- Create `configs/*_no_ubsp.yaml`
-- Run on both datasets
-- Compare with EXP-007
-- Update EXPERIMENT_REGISTRY.md
 
 ---
 
