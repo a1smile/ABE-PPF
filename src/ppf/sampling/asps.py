@@ -31,6 +31,7 @@ class ASPSConfig:
     matching_pair_ambiguity_weight: float = 0.35
     matching_pair_candidate_multiplier: float = 2.0
     seed: int = 0
+    sampling_strategy: str = "asps"  # "asps" | "random" | "uniform" | "curvature" | "normal_stability"
 
 
 @dataclass
@@ -126,6 +127,26 @@ def _coarse_candidate_score(reliability: float, neighbor_count: int, coarse_neig
     )
 
 
+def _build_feasible_and_neighbors(
+    points: np.ndarray,
+    pairwise_distances: np.ndarray,
+    min_pair_distance: float,
+    pair_radius: float,
+    scene_pair_cap: int,
+) -> tuple[list[int], dict[int, np.ndarray]]:
+    feasible_indices: list[int] = []
+    neighbor_cache: dict[int, np.ndarray] = {}
+    for i in range(points.shape[0]):
+        distances = pairwise_distances[i]
+        nids = np.where((distances > min_pair_distance) & (distances <= pair_radius))[0]
+        if nids.size == 0:
+            continue
+        feasible_indices.append(i)
+        order = nids[np.argsort(distances[nids])]
+        neighbor_cache[i] = order[:scene_pair_cap]
+    return feasible_indices, neighbor_cache
+
+
 class ASPSSelector:
     def __init__(self, cfg: ASPSConfig):
         self.cfg = cfg
@@ -153,6 +174,23 @@ class ASPSSelector:
             float(model_bundle.model_diameter * self.cfg.pair_radius_ratio),
         )
         min_pair_distance = max(float(model_bundle.min_pair_distance), float(model_bundle.distance_step))
+
+        strategy = str(getattr(self.cfg, "sampling_strategy", "asps") or "asps").strip().lower()
+        if strategy != "asps":
+            return self._select_alternative(
+                strategy=strategy,
+                points=points,
+                normals=normals,
+                model_bundle=model_bundle,
+                reliability=reliability,
+                position_sigma=position_sigma,
+                normal_sigma=normal_sigma,
+                pairwise_distances=pairwise_distances,
+                pairwise_offsets=pairwise_offsets,
+                pair_radius=pair_radius,
+                min_pair_distance=min_pair_distance,
+                pair_cap_per_reference=pair_cap_per_reference,
+            )
 
         scored_indices: List[int] = []
         feasible_indices: List[int] = []
@@ -306,6 +344,119 @@ class ASPSSelector:
             num_selected_after_nms=int(num_selected_after_nms),
             num_backfilled=max(0, int(len(selected) - num_selected_after_nms)),
         )
+
+    def _select_alternative(
+        self,
+        strategy: str,
+        points, normals, model_bundle,
+        reliability, position_sigma, normal_sigma,
+        pairwise_distances, pairwise_offsets,
+        pair_radius, min_pair_distance, pair_cap_per_reference,
+    ):
+        scene_pair_cap = int(pair_cap_per_reference or self.cfg.matching_pair_cap_per_reference or 64)
+        if scene_pair_cap <= 0:
+            scene_pair_cap = 64
+
+        feasible_indices, neighbor_cache = _build_feasible_and_neighbors(
+            points, pairwise_distances, min_pair_distance, pair_radius, scene_pair_cap
+        )
+
+        top_m = int(self.cfg.top_m_reference_points)
+        num_to_select = min(top_m, len(feasible_indices))
+
+        if strategy == "random":
+            selected_indices = self._random_select(feasible_indices, num_to_select)
+        elif strategy == "uniform":
+            selected_indices = self._uniform_select(points, feasible_indices, num_to_select)
+        elif strategy == "curvature":
+            selected_indices = self._curvature_select(points, normals, feasible_indices, num_to_select)
+        elif strategy == "normal_stability":
+            selected_indices = self._normal_stability_select(reliability, feasible_indices, num_to_select)
+        else:
+            raise ValueError(f"Unknown sampling_strategy: {strategy}")
+
+        references = []
+        for idx in selected_indices:
+            nids = neighbor_cache.get(int(idx), np.array([], dtype=np.int64))
+            pair_indices = [int(x) for x in nids[:scene_pair_cap].tolist()]
+            references.append(ReferencePointScore(
+                index=int(idx),
+                score=1.0,
+                reliability=float(reliability[int(idx)]),
+                ambiguity_score=0.0,
+                diversity_score=0.0,
+                redundancy_penalty=1.0,
+                position_sigma=float(position_sigma[int(idx)]),
+                normal_sigma=float(normal_sigma[int(idx)]),
+                pair_indices=pair_indices,
+            ))
+
+        return ASPSResult(
+            references=references,
+            num_candidates=len(references),
+            num_scored_candidates=len(feasible_indices),
+            pair_radius=float(pair_radius),
+            reliability_scores=reliability,
+            position_sigmas=position_sigma,
+            normal_sigmas=normal_sigma,
+            num_selected_after_nms=len(references),
+            num_backfilled=0,
+        )
+
+    def _random_select(self, feasible_indices, num_to_select):
+        return [int(x) for x in self.rng.choice(feasible_indices, size=num_to_select, replace=False).tolist()]
+
+    def _uniform_select(self, points, feasible_indices, num_to_select):
+        # Farthest Point Sampling on feasible points
+        pts = np.asarray(points, dtype=np.float64)
+        feasible = np.array(feasible_indices, dtype=np.int64)
+        if len(feasible) <= num_to_select:
+            return [int(x) for x in feasible.tolist()]
+
+        # Start from a random point
+        start_idx = int(self.rng.choice(len(feasible)))
+        selected_local = [start_idx]
+        selected_pts = [pts[feasible[start_idx]]]
+
+        min_distances = np.full(len(feasible), np.inf, dtype=np.float64)
+
+        for _ in range(1, num_to_select):
+            latest = pts[feasible[selected_local[-1]]]
+            dists = np.linalg.norm(pts[feasible] - latest[None, :], axis=1)
+            min_distances = np.minimum(min_distances, dists)
+            # Pick the point farthest from all selected
+            min_distances[selected_local] = -1.0
+            next_local = int(np.argmax(min_distances))
+            selected_local.append(next_local)
+
+        return [int(feasible[i]) for i in selected_local]
+
+    def _curvature_select(self, points, normals, feasible_indices, num_to_select):
+        # Compute curvature = lambda_min / sum(lambdas) for each feasible point via PCA on k-NN
+        curvatures = []
+        knn_val = int(self.cfg.knn)
+        for idx in feasible_indices:
+            idx_int = int(idx)
+            dists = np.linalg.norm(points - points[idx_int][None, :], axis=1)
+            k = min(knn_val + 1, len(points))
+            nn_ids = np.argpartition(dists, k)[:k]
+            nn_ids = nn_ids[nn_ids != idx_int][:knn_val]
+            if len(nn_ids) < 3:
+                curvatures.append((idx_int, 0.0))
+                continue
+            centered = points[nn_ids] - np.mean(points[nn_ids], axis=0, keepdims=True)
+            cov = centered.T @ centered / max(1, len(nn_ids))
+            eigvals = np.sort(np.linalg.eigvalsh(cov))
+            curvature = float(eigvals[0] / max(1e-12, np.sum(eigvals)))
+            curvatures.append((idx_int, curvature))
+
+        curvatures.sort(key=lambda x: x[1], reverse=True)
+        return [x[0] for x in curvatures[:num_to_select]]
+
+    def _normal_stability_select(self, reliability, feasible_indices, num_to_select):
+        scored = [(int(i), float(reliability[int(i)])) for i in feasible_indices]
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return [x[0] for x in scored[:num_to_select]]
 
     def _select_matching_pairs(
         self,

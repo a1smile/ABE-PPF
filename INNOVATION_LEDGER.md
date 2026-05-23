@@ -230,7 +230,7 @@
 
 | Module | Current Evidence | Strongest Claim | Needs Ablation |
 |--------|-----------------|-----------------|----------------|
-| ASPS   | moderate | Stanford +100% vs pre-Codex baseline; LMO cap sweep shows optimal range | ASPS vs random/uniform/curvature sampling; diversity formula comparison |
+| ASPS (full pipeline) | **strong** | Stage 1C: ASPS full pipeline vs random/uniform/curvature/normal-stability on both datasets. Stanford: 14 vs 7/10/1/8 (gap +4 to +13). LMO: 17 vs 7/8/5/12 (gap +5 to +12). ASPS full pipeline consistently and substantially outperforms all simple alternatives. **Note: this is full pipeline ablation, not sub-component validation.** | Bucket ambiguity, diversity, NMS, pair shortlist — each needs separate ablation (Level 2) to isolate individual contributions |
 | UBSP   | **strong** | EXP-014: UBSP ON vs OFF on both datasets. Stanford: 14→12 (−2 cases, −11.1pp). LMO: 17→16 (−1 case, −3.1pp). Time cost negligible (~0.04s). Neighbor bucket probing recovers correct matches that fall into adjacent hash bins. No evidence of false matches. | λ sweep on LMO; max_expand_dims sweep |
 | BRPMR (full module) | **strong** | BRPMR ON vs OFF: Stanford +5 (9→14), LMO +4 (13→17). Full module is critical for accuracy. | — (proven) |
 | BRPMR (mode pool) | **strong** | Mode pool + candidate aggregation is the primary accuracy driver within BRPMR. | obj_000009 regression (NOT CF/ES-related; needs mode pool investigation) |

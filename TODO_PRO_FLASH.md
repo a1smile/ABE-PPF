@@ -52,7 +52,19 @@ All Stage 0B docs committed (ea0f5b3). ABEPPF.md and .claude/agents committed (5
 
 ---
 
-## Stage 1 Later: ASPS Sampling Comparison
+## Stage 1C: ASPS Full Pipeline Ablation ✅ COMPLETE
+
+**Result**: ASPS full pipeline vs random/uniform/curvature/normal-stability on both datasets. Stanford: ASPS 14/18 vs alt 1-10/18. LMO: ASPS 17/32 vs alt 5-12/32. ASPS consistently and substantially outperforms all simple alternatives (gap +4 to +13 cases). ASPS is a clear accuracy-time tradeoff: ~0.4-0.55s additional frontend compute buys +4 to +13 successes. Random shows high seed sensitivity (5-9/32 range). Curvature-only is catastrophic (1/18 Stanford). Normal-stability best alternative but still far below ASPS (44% vs 78% Stanford).
+
+**Scope note**: This is full pipeline ablation. Does NOT isolate bucket ambiguity, diversity, NMS, or pair shortlist individually. Level 2 mechanism decoupling reserved for after subset expansion.
+
+**Evidence**: ASPS full pipeline → **strong**. `sampling_strategy` code and 8 ablation configs retained.
+
+**Next**: Stage 4 — expand validation subsets. Stop fine-tuning on 18/32 cases.
+
+---
+
+## Stage 1 Later: ASPS Internal Mechanism Decoupling (Level 2, deferred)
 
 - ASPS vs random sampling (same M reference points)
 - ASPS vs uniform downsampling
