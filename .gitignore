@@ -69,3 +69,14 @@ Thumbs.db
 # =========================
 *.tmp
 *.temp
+
+# 本地临时目录
+deprecated/
+experiments/tmp/
+paper_outputs/
+
+# Claude Code 自动生成
+CLAUDE.md
+
+# 百度云同步文件
+*.baiduyun.uploading.cfg
