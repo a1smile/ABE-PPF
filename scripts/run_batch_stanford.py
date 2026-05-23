@@ -6,9 +6,9 @@ import hashlib
 import argparse
 import logging
 import traceback
-from multiprocessing import Pool
 from datetime import datetime
 from typing import Optional, Tuple
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -22,6 +22,7 @@ from ppf.io import load_config
 from ppf.utils import setup_logger, ensure_dir, save_json
 from ppf.registration import run_registration
 from ppf.metrics import compute_metrics
+from ppf.bop_gt import scene_dir_from_depth_path, try_get_bop_gt_pose
 from ppf.preprocess import (
     subsample_and_calculate_normals_model,
     adaptive_subsample_and_calculate_normals_model,
@@ -32,16 +33,35 @@ from ppf.model_cache_io import (
     load_ppf_model_cache,
     make_cache_meta,
 )
+from scripts.true_process_runner import (
+    default_process_start_method,
+    run_tasks_with_true_processes,
+)
 
 G_CFG = None
 G_RUN_DIR = None
 G_LOGGER = None
 G_INLIER_RADIUS = 5.0
+G_USE_BOP_GT = False
+G_T_SCALE = 1.0
 
 
 def resolve_repo_path(path_str: str) -> str:
-    path_str = str(path_str)
-    return path_str if os.path.isabs(path_str) else os.path.join(ROOT, path_str)
+    path_str = os.path.normpath(str(path_str).replace("\\", os.sep).replace("/", os.sep))
+    return path_str if os.path.isabs(path_str) else os.path.normpath(os.path.join(ROOT, path_str))
+
+
+def repo_rel_path(path_str: Optional[str]) -> Optional[str]:
+    if path_str is None:
+        return None
+    text = str(path_str).strip()
+    if not text:
+        return text
+    resolved = resolve_repo_path(text)
+    try:
+        return Path(os.path.relpath(resolved, ROOT)).as_posix()
+    except Exception:
+        return Path(os.path.abspath(resolved)).as_posix()
 
 
 def _is_valid(v) -> bool:
@@ -135,6 +155,7 @@ def cache_signature_payload(model_path: str, cfg: dict) -> dict:
         "distance_step_ratio": float(cfg.get("distance_step_ratio", 0.6)),
         "enable_rsmrq": bool(cfg.get("enable_rsmrq", False)),
         "enable_robust_vote": bool(cfg.get("enable_robust_vote", False)),
+        "store_pair_features": bool(cfg.get("store_pair_features", False)),
         "rsmrq": dict(cfg.get("rsmrq", {}) or {}),
         "robust_vote": dict(cfg.get("robust_vote", {}) or {}),
         "adaptive_downsample": bool(cfg.get("adaptive_downsample", False)),
@@ -206,12 +227,14 @@ def build_or_load_model_cache(model_path: str, cache_path: str, cfg: dict, logge
     return cache_path
 
 
-def init_worker(cfg, run_dir, logger, inlier_radius):
-    global G_CFG, G_RUN_DIR, G_LOGGER, G_INLIER_RADIUS
+def init_worker(cfg, run_dir, logger, inlier_radius, use_bop_gt, t_scale):
+    global G_CFG, G_RUN_DIR, G_LOGGER, G_INLIER_RADIUS, G_USE_BOP_GT, G_T_SCALE
     G_CFG = cfg
     G_RUN_DIR = run_dir
     G_LOGGER = logger
     G_INLIER_RADIUS = float(inlier_radius)
+    G_USE_BOP_GT = bool(use_bop_gt)
+    G_T_SCALE = float(t_scale)
 
 
 def process_one(task):
@@ -232,7 +255,25 @@ def process_one(task):
 
         T_gt = None
         gt_path = None
-        if "gt_path" in row and _is_valid(row["gt_path"]):
+        obj_id_src = "csv"
+        if G_USE_BOP_GT:
+            for required_col in ["depth_path", "frame_id", "obj_token"]:
+                if required_col not in row or not _is_valid(row.get(required_col)):
+                    raise ValueError(f"--use_bop_gt requires column: {required_col}")
+            depth_path = resolve_repo_path(str(row["depth_path"]))
+            scene_dir = scene_dir_from_depth_path(depth_path)
+            obj_id_gt, T_gt_tmp, err = try_get_bop_gt_pose(
+                scene_dir,
+                int(row["frame_id"]),
+                int(row["obj_token"]),
+                t_scale=float(G_T_SCALE),
+            )
+            if err is not None or obj_id_gt is None or T_gt_tmp is None:
+                raise ValueError(f"BOP GT lookup failed: {err}")
+            T_gt = T_gt_tmp
+            obj_id = int(obj_id_gt)
+            obj_id_src = "bop_gt"
+        elif "gt_path" in row and _is_valid(row["gt_path"]):
             gt_path = resolve_repo_path(str(row["gt_path"]))
             if not os.path.exists(gt_path):
                 raise FileNotFoundError(f"gt_path missing: {gt_path}")
@@ -260,16 +301,17 @@ def process_one(task):
         rec = {
             "idx": int(idx),
             "obj_id": (None if obj_id is None else int(obj_id)),
+            "obj_id_src": obj_id_src,
             "scene_id": (None if not _is_valid(row.get("scene_id")) else int(row["scene_id"])),
             "scene_name": row.get("scene_name"),
             "scene_variant": row.get("scene_variant"),
-            "model_path": model_path,
+            "model_path": repo_rel_path(model_path),
             "model_path_src": model_src,
-            "model_cache_path": model_cache_path,
-            "scene_path": scene_path,
+            "model_cache_path": repo_rel_path(model_cache_path),
+            "scene_path": repo_rel_path(scene_path),
             "scene_path_raw": scene_path_raw,
-            "gt_path": gt_path,
-            "config_path": row.get("config_path"),
+            "gt_path": repo_rel_path(gt_path),
+            "config_path": repo_rel_path(row.get("config_path")),
             "gt_threshold": row.get("gt_threshold"),
             "T_pred": T_pred.tolist(),
             "T_gt": (T_gt.tolist() if T_gt is not None else None),
@@ -322,7 +364,10 @@ def main():
     ap.add_argument("--out_prefix", type=str, default="stanford_batch_cached")
     ap.add_argument("--limit", type=int, default=-1)
     ap.add_argument("--num_workers", type=int, default=8)
+    ap.add_argument("--start_method", type=str, default=default_process_start_method())
     ap.add_argument("--inlier_radius", type=float, default=5.0)
+    ap.add_argument("--use_bop_gt", action="store_true")
+    ap.add_argument("--t_scale", type=float, default=1.0)
     args = ap.parse_args()
 
     config_path = resolve_repo_path(args.config)
@@ -348,6 +393,10 @@ def main():
 
     if "pcd_path" not in df.columns:
         raise ValueError("CSV missing required column: pcd_path")
+    if bool(args.use_bop_gt):
+        for c in ["obj_token", "frame_id", "depth_path"]:
+            if c not in df.columns:
+                raise ValueError(f"--use_bop_gt requires CSV column: {c}")
 
     rows = []
     unique_models = {}
@@ -369,7 +418,10 @@ def main():
     logger.info(f"Total tasks: {len(rows)}")
     logger.info(f"Unique models: {len(unique_models)}")
     logger.info(f"Num workers: {int(args.num_workers)}")
+    logger.info(f"Process start method: {args.start_method}")
     logger.info(f"Inlier radius: {float(args.inlier_radius)}")
+    logger.info(f"Use BOP GT: {bool(args.use_bop_gt)}")
+    logger.info(f"GT translation scale: {float(args.t_scale)}")
 
     built_cache_records = []
     for model_path, cache_path in tqdm(unique_models.items(), total=len(unique_models), desc="BuildCache",
@@ -379,31 +431,24 @@ def main():
 
     results = []
     failures = []
-    if int(args.num_workers) <= 1:
-        init_worker(cfg, run_dir, logger, args.inlier_radius)
-        for task in tqdm(rows, total=len(rows), desc="Processing", unit="task"):
-            ret = process_one(task)
-            if ret["ok"]:
-                results.append(ret["record"])
-            else:
-                failures.append(ret)
-                logger.error(f"[{ret['idx']}] failed: {ret.get('error', 'unknown error')}")
-                if ret.get("traceback"):
-                    logger.error(ret["traceback"])
-    else:
-        with Pool(
-                processes=int(args.num_workers),
-                initializer=init_worker,
-                initargs=(cfg, run_dir, logger, args.inlier_radius),
-        ) as pool:
-            for ret in tqdm(pool.imap_unordered(process_one, rows), total=len(rows), desc="Processing", unit="task"):
-                if ret["ok"]:
-                    results.append(ret["record"])
-                else:
-                    failures.append(ret)
-                    logger.error(f"[{ret['idx']}] failed: {ret.get('error', 'unknown error')}")
-                    if ret.get("traceback"):
-                        logger.error(ret["traceback"])
+    returned = run_tasks_with_true_processes(
+        rows,
+        int(args.num_workers),
+        process_one,
+        init_worker=init_worker,
+        initargs=(cfg, run_dir, logger, args.inlier_radius, args.use_bop_gt, args.t_scale),
+        desc="Processing",
+        unit="task",
+        start_method=args.start_method,
+    )
+    for ret in returned:
+        if ret["ok"]:
+            results.append(ret["record"])
+        else:
+            failures.append(ret)
+            logger.error(f"[{ret['idx']}] failed: {ret.get('error', 'unknown error')}")
+            if ret.get("traceback"):
+                logger.error(ret["traceback"])
 
     results.sort(key=lambda x: x["idx"])
 
@@ -411,14 +456,47 @@ def main():
     save_json(
         out_json,
         {
-            "config_path": config_path,
-            "csv_path": csv_path,
-            "models_dir": models_dir,
-            "cache_dir": cache_dir,
-            "caches": built_cache_records,
+            "method": cfg.get("external_method", {}).get("name", cfg.get("method", "batch_method")),
+            "config_path": repo_rel_path(config_path),
+            "csv_path": repo_rel_path(csv_path),
+            "models_dir": repo_rel_path(models_dir),
+            "cache_dir": repo_rel_path(cache_dir),
+            "caches": [
+                {
+                    "model_path": repo_rel_path(item["model_path"]),
+                    "cache_path": repo_rel_path(item["cache_path"]),
+                }
+                for item in built_cache_records
+            ],
             "results": results,
             "failure_count": len(failures),
             "inlier_radius": float(args.inlier_radius),
+            "use_bop_gt": bool(args.use_bop_gt),
+            "t_scale": float(args.t_scale),
+        },
+    )
+
+    root_json = os.path.join(cfg["output"]["results_dir"], f"{args.out_prefix}_batch.json")
+    save_json(
+        root_json,
+        {
+            "method": cfg.get("external_method", {}).get("name", cfg.get("method", "batch_method")),
+            "config_path": repo_rel_path(config_path),
+            "csv_path": repo_rel_path(csv_path),
+            "models_dir": repo_rel_path(models_dir),
+            "cache_dir": repo_rel_path(cache_dir),
+            "caches": [
+                {
+                    "model_path": repo_rel_path(item["model_path"]),
+                    "cache_path": repo_rel_path(item["cache_path"]),
+                }
+                for item in built_cache_records
+            ],
+            "results": results,
+            "failure_count": len(failures),
+            "inlier_radius": float(args.inlier_radius),
+            "use_bop_gt": bool(args.use_bop_gt),
+            "t_scale": float(args.t_scale),
         },
     )
 
@@ -426,23 +504,27 @@ def main():
     save_json(
         summary_json,
         {
-            "config_path": config_path,
-            "csv_path": csv_path,
-            "models_dir": models_dir,
-            "cache_dir": cache_dir,
+            "config_path": repo_rel_path(config_path),
+            "csv_path": repo_rel_path(csv_path),
+            "models_dir": repo_rel_path(models_dir),
+            "cache_dir": repo_rel_path(cache_dir),
             "total_tasks": len(rows),
             "unique_models": len(unique_models),
             "success_count": len(results),
             "failure_count": len(failures),
             "num_workers": int(args.num_workers),
-            "result_json": out_json,
-            "log_path": log_path,
+            "start_method": args.start_method,
+            "result_json": repo_rel_path(out_json),
+            "log_path": repo_rel_path(log_path),
             "script": os.path.basename(__file__),
+            "use_bop_gt": bool(args.use_bop_gt),
+            "t_scale": float(args.t_scale),
         },
     )
 
     print(f"\n[DONE] Run directory: {run_dir}")
     print(f"[DONE] Batch JSON: {out_json}")
+    print(f"[DONE] Root Batch JSON: {root_json}")
     print(f"[DONE] Log file: {log_path}")
 
 

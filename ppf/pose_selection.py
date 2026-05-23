@@ -105,6 +105,31 @@ class PoseEvalResult:
         return PoseHypothesis(T=self.T.copy(), score=float(self.score), meta=meta)
 
 
+def _is_vote_only_no_backend_mode(
+    ps_cfg: PoseSelectionCfg,
+    weights: PoseScoreWeights,
+    light_refine_cfg: LightRefineCfg,
+    vis_cfg: VisibilityCfg,
+    veto_cfg: CandidateVetoCfg,
+) -> bool:
+    if not ps_cfg.enable:
+        return False
+    if ps_cfg.pre_top_m_by_vote > 1 or ps_cfg.candidate_top_k > 1 or ps_cfg.refine_top_k > 0:
+        return False
+    if light_refine_cfg.enable and light_refine_cfg.max_iter > 0:
+        return False
+    if vis_cfg.enable or veto_cfg.enable:
+        return False
+    zero_weights = [
+        weights.inlier,
+        weights.coverage,
+        weights.normal,
+        weights.residual,
+        weights.visibility,
+    ]
+    return abs(weights.vote) > 0.0 and all(abs(v) <= 1e-12 for v in zero_weights)
+
+
 def _build_point_cloud(points: np.ndarray, normals: Optional[np.ndarray] = None) -> o3d.geometry.PointCloud:
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(points.astype(np.float64))
@@ -519,6 +544,84 @@ def select_pose_hypotheses(
             "num_preselected": 0,
             "num_selected": 0,
             "num_light_refined": 0,
+        }
+
+    if _is_vote_only_no_backend_mode(ps_cfg, weights, light_refine_cfg, vis_cfg, veto_cfg):
+        sorted_votes = sorted(
+            [
+                (idx, np.asarray(getattr(vp, "T"), dtype=np.float64), float(getattr(vp, "votes", 1.0)))
+                for idx, vp in enumerate(voted_poses)
+            ],
+            key=lambda x: x[2],
+            reverse=True,
+        )
+        src_idx, T_best, vote_best = sorted_votes[0]
+        top_result = PoseEvalResult(
+            T=T_best.copy(),
+            vote=float(vote_best),
+            vote_norm=1.0,
+            inlier_ratio=0.0,
+            residual_mean=0.0,
+            residual_score=0.0,
+            coverage=0.0,
+            normal_consistency=0.0,
+            visibility_support=0.0,
+            score=1.0,
+            refined=False,
+            source_index=int(src_idx),
+            source_stage="raw_vote_only",
+        )
+        return [top_result.to_hypothesis()], {
+            "enabled": True,
+            "mode": "vote_only_no_backend",
+            "num_input_candidates": len(voted_poses),
+            "num_preselected": 1,
+            "num_selected": 1,
+            "num_light_refined": 0,
+            "pre_top_m_by_vote": 1,
+            "candidate_top_k": 1,
+            "refine_top_k": 0,
+            "num_veto_rejected": 0,
+            "veto_fallback_used": False,
+            "score_weights": {
+                "vote": float(weights.vote),
+                "inlier": float(weights.inlier),
+                "coverage": float(weights.coverage),
+                "normal": float(weights.normal),
+                "residual": float(weights.residual),
+                "visibility": float(weights.visibility),
+            },
+            "visibility_cfg": {
+                "enable": bool(vis_cfg.enable),
+                "radius": float(vis_cfg.radius),
+                "normal_dot_thresh": float(vis_cfg.normal_dot_thresh),
+                "require_normal_agreement": bool(vis_cfg.require_normal_agreement),
+                "scene_normal_dot_thresh": float(vis_cfg.scene_normal_dot_thresh),
+            },
+            "candidate_veto_cfg": {
+                "enable": bool(veto_cfg.enable),
+                "min_visibility_and_inlier_visibility": float(veto_cfg.min_visibility_and_inlier_visibility),
+                "min_visibility_and_inlier_inlier": float(veto_cfg.min_visibility_and_inlier_inlier),
+                "min_visibility_and_coverage_visibility": float(veto_cfg.min_visibility_and_coverage_visibility),
+                "min_visibility_and_coverage_coverage": float(veto_cfg.min_visibility_and_coverage_coverage),
+                "relative_visibility_ratio": float(veto_cfg.relative_visibility_ratio),
+                "relative_inlier_ratio": float(veto_cfg.relative_inlier_ratio),
+                "relative_coverage_ratio": float(veto_cfg.relative_coverage_ratio),
+                "min_keep_candidates": int(veto_cfg.min_keep_candidates),
+            },
+            "best_score": 1.0,
+            "best_vote": float(vote_best),
+            "best_inlier_ratio": 0.0,
+            "best_coverage": 0.0,
+            "best_normal_consistency": 0.0,
+            "best_residual_mean": 0.0,
+            "best_visibility_support": 0.0,
+            "top_scores": [1.0],
+            "top_votes": [float(vote_best)],
+            "top_inlier_ratios": [0.0],
+            "top_coverages": [0.0],
+            "top_visibility_supports": [0.0],
+            "top_sources": ["raw_vote_only"],
         }
 
     scene_pts = np.asarray(scene_pcd.points, dtype=np.float64)

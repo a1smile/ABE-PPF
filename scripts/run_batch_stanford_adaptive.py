@@ -6,7 +6,6 @@ import argparse
 import logging
 import traceback
 from datetime import datetime
-from multiprocessing import Pool
 from typing import Dict, Optional
 
 import numpy as np
@@ -18,6 +17,7 @@ ROOT = os.path.dirname(os.path.dirname(__file__)) if "__file__" in globals() els
 sys.path.append(ROOT)
 
 from ppf.adaptive_two_stage import should_escalate
+from ppf.bop_gt import scene_dir_from_depth_path, try_get_bop_gt_pose
 from ppf.io import load_config
 from ppf.metrics import compute_metrics
 from ppf.registration import run_registration
@@ -27,8 +27,13 @@ from scripts.run_batch_stanford import (
     build_or_load_model_cache,
     derive_cache_path,
     parse_xf_matrix,
+    repo_rel_path,
     resolve_model_from_row,
     resolve_repo_path,
+)
+from scripts.true_process_runner import (
+    default_process_start_method,
+    run_tasks_with_true_processes,
 )
 
 
@@ -40,6 +45,8 @@ G_INLIER_RADIUS = 5.0
 G_TRIGGER_THRESHOLDS = None
 G_STAGE1_METHOD = "no_rsmrq"
 G_STAGE2_METHOD = "ours_full"
+G_USE_BOP_GT = False
+G_T_SCALE = 1.0
 
 
 def init_worker(
@@ -51,9 +58,12 @@ def init_worker(
     trigger_thresholds,
     stage1_method,
     stage2_method,
+    use_bop_gt,
+    t_scale,
 ):
     global G_STAGE1_CFG, G_STAGE2_CFG, G_RUN_DIR, G_LOGGER
     global G_INLIER_RADIUS, G_TRIGGER_THRESHOLDS, G_STAGE1_METHOD, G_STAGE2_METHOD
+    global G_USE_BOP_GT, G_T_SCALE
     G_STAGE1_CFG = stage1_cfg
     G_STAGE2_CFG = stage2_cfg
     G_RUN_DIR = run_dir
@@ -62,6 +72,8 @@ def init_worker(
     G_TRIGGER_THRESHOLDS = dict(trigger_thresholds)
     G_STAGE1_METHOD = str(stage1_method)
     G_STAGE2_METHOD = str(stage2_method)
+    G_USE_BOP_GT = bool(use_bop_gt)
+    G_T_SCALE = float(t_scale)
 
 
 def _stats_to_dict(stats) -> Dict[str, float]:
@@ -119,7 +131,25 @@ def process_one(task):
 
         T_gt = None
         gt_path = None
-        if "gt_path" in row and _is_valid(row["gt_path"]):
+        obj_id_src = "csv"
+        if G_USE_BOP_GT:
+            for required_col in ["depth_path", "frame_id", "obj_token"]:
+                if required_col not in row or not _is_valid(row.get(required_col)):
+                    raise ValueError(f"--use_bop_gt requires column: {required_col}")
+            depth_path = resolve_repo_path(str(row["depth_path"]))
+            scene_dir = scene_dir_from_depth_path(depth_path)
+            obj_id_gt, T_gt_tmp, err = try_get_bop_gt_pose(
+                scene_dir,
+                int(row["frame_id"]),
+                int(row["obj_token"]),
+                t_scale=float(G_T_SCALE),
+            )
+            if err is not None or obj_id_gt is None or T_gt_tmp is None:
+                raise ValueError(f"BOP GT lookup failed: {err}")
+            T_gt = T_gt_tmp
+            obj_id = int(obj_id_gt)
+            obj_id_src = "bop_gt"
+        elif "gt_path" in row and _is_valid(row["gt_path"]):
             gt_path = resolve_repo_path(str(row["gt_path"]))
             if not os.path.exists(gt_path):
                 raise FileNotFoundError(f"gt_path missing: {gt_path}")
@@ -213,16 +243,17 @@ def process_one(task):
         rec = {
             "idx": int(idx),
             "obj_id": (None if obj_id is None else int(obj_id)),
+            "obj_id_src": obj_id_src,
             "scene_id": (None if not _is_valid(row.get("scene_id")) else int(row["scene_id"])),
             "scene_name": row.get("scene_name"),
             "scene_variant": row.get("scene_variant"),
-            "model_path": model_path,
+            "model_path": repo_rel_path(model_path),
             "model_path_src": model_src,
-            "model_cache_path": stage2_cache_path if used_upgrade else stage1_cache_path,
-            "scene_path": scene_path,
+            "model_cache_path": repo_rel_path(stage2_cache_path if used_upgrade else stage1_cache_path),
+            "scene_path": repo_rel_path(scene_path),
             "scene_path_raw": scene_path_raw,
-            "gt_path": gt_path,
-            "config_path": row.get("config_path"),
+            "gt_path": repo_rel_path(gt_path),
+            "config_path": repo_rel_path(row.get("config_path")),
             "gt_threshold": row.get("gt_threshold"),
             "T_pred": T_final.tolist(),
             "T_gt": (T_gt.tolist() if T_gt is not None else None),
@@ -268,12 +299,15 @@ def main():
     ap.add_argument("--out_prefix", type=str, default="stanford_adaptive_two_stage")
     ap.add_argument("--limit", type=int, default=-1)
     ap.add_argument("--num_workers", type=int, default=8)
+    ap.add_argument("--start_method", type=str, default=default_process_start_method())
     ap.add_argument("--inlier_radius", type=float, default=5.0)
     ap.add_argument("--stage1_method_name", type=str, default="no_rsmrq")
     ap.add_argument("--stage2_method_name", type=str, default="ours_full")
     ap.add_argument("--best_score_threshold", type=float, default=0.72)
     ap.add_argument("--top_score_margin_threshold", type=float, default=0.02)
     ap.add_argument("--best_visibility_support_threshold", type=float, default=0.28)
+    ap.add_argument("--use_bop_gt", action="store_true")
+    ap.add_argument("--t_scale", type=float, default=1.0)
     args = ap.parse_args()
 
     stage1_config_path = resolve_repo_path(args.stage1_config)
@@ -308,6 +342,10 @@ def main():
 
     if "pcd_path" not in df.columns:
         raise ValueError("CSV missing required column: pcd_path")
+    if bool(args.use_bop_gt):
+        for c in ["obj_token", "frame_id", "depth_path"]:
+            if c not in df.columns:
+                raise ValueError(f"--use_bop_gt requires CSV column: {c}")
 
     rows = []
     unique_stage_caches = {}
@@ -333,8 +371,11 @@ def main():
     logger.info(f"Total tasks: {len(rows)}")
     logger.info(f"Unique model-stage caches: {len(unique_stage_caches)}")
     logger.info(f"Num workers: {int(args.num_workers)}")
+    logger.info(f"Process start method: {args.start_method}")
     logger.info(f"Inlier radius: {float(args.inlier_radius)}")
     logger.info(f"Adaptive trigger thresholds: {json.dumps(trigger_thresholds, ensure_ascii=False)}")
+    logger.info(f"Use BOP GT: {bool(args.use_bop_gt)}")
+    logger.info(f"GT translation scale: {float(args.t_scale)}")
 
     built_cache_records = []
     for (stage_name, model_path, cache_path), cfg in tqdm(
@@ -354,8 +395,12 @@ def main():
 
     results = []
     failures = []
-    if int(args.num_workers) <= 1:
-        init_worker(
+    returned = run_tasks_with_true_processes(
+        rows,
+        int(args.num_workers),
+        process_one,
+        init_worker=init_worker,
+        initargs=(
             stage1_cfg,
             stage2_cfg,
             run_dir,
@@ -364,39 +409,21 @@ def main():
             trigger_thresholds,
             args.stage1_method_name,
             args.stage2_method_name,
-        )
-        for task in tqdm(rows, total=len(rows), desc="Processing", unit="task"):
-            ret = process_one(task)
-            if ret["ok"]:
-                results.append(ret["record"])
-            else:
-                failures.append(ret)
-                logger.error(f"[{ret['idx']}] failed: {ret.get('error', 'unknown error')}")
-                if ret.get("traceback"):
-                    logger.error(ret["traceback"])
-    else:
-        with Pool(
-            processes=int(args.num_workers),
-            initializer=init_worker,
-            initargs=(
-                stage1_cfg,
-                stage2_cfg,
-                run_dir,
-                logger,
-                args.inlier_radius,
-                trigger_thresholds,
-                args.stage1_method_name,
-                args.stage2_method_name,
-            ),
-        ) as pool:
-            for ret in tqdm(pool.imap_unordered(process_one, rows), total=len(rows), desc="Processing", unit="task"):
-                if ret["ok"]:
-                    results.append(ret["record"])
-                else:
-                    failures.append(ret)
-                    logger.error(f"[{ret['idx']}] failed: {ret.get('error', 'unknown error')}")
-                    if ret.get("traceback"):
-                        logger.error(ret["traceback"])
+            args.use_bop_gt,
+            args.t_scale,
+        ),
+        desc="Processing",
+        unit="task",
+        start_method=args.start_method,
+    )
+    for ret in returned:
+        if ret["ok"]:
+            results.append(ret["record"])
+        else:
+            failures.append(ret)
+            logger.error(f"[{ret['idx']}] failed: {ret.get('error', 'unknown error')}")
+            if ret.get("traceback"):
+                logger.error(ret["traceback"])
 
     results.sort(key=lambda item: item["idx"])
 
@@ -404,18 +431,55 @@ def main():
     save_json(
         out_json,
         {
-            "stage1_config_path": stage1_config_path,
-            "stage2_config_path": stage2_config_path,
-            "csv_path": csv_path,
-            "models_dir": models_dir,
-            "cache_dir": cache_dir,
-            "caches": built_cache_records,
+            "stage1_config_path": repo_rel_path(stage1_config_path),
+            "stage2_config_path": repo_rel_path(stage2_config_path),
+            "csv_path": repo_rel_path(csv_path),
+            "models_dir": repo_rel_path(models_dir),
+            "cache_dir": repo_rel_path(cache_dir),
+            "caches": [
+                {
+                    "stage": item["stage"],
+                    "model_path": repo_rel_path(item["model_path"]),
+                    "cache_path": repo_rel_path(item["cache_path"]),
+                }
+                for item in built_cache_records
+            ],
             "results": results,
             "failure_count": len(failures),
             "inlier_radius": float(args.inlier_radius),
             "adaptive_trigger_thresholds": trigger_thresholds,
             "stage1_method_name": args.stage1_method_name,
             "stage2_method_name": args.stage2_method_name,
+            "use_bop_gt": bool(args.use_bop_gt),
+            "t_scale": float(args.t_scale),
+        },
+    )
+
+    root_json = os.path.join(stage2_cfg["output"]["results_dir"], f"{args.out_prefix}_batch.json")
+    save_json(
+        root_json,
+        {
+            "stage1_config_path": repo_rel_path(stage1_config_path),
+            "stage2_config_path": repo_rel_path(stage2_config_path),
+            "csv_path": repo_rel_path(csv_path),
+            "models_dir": repo_rel_path(models_dir),
+            "cache_dir": repo_rel_path(cache_dir),
+            "caches": [
+                {
+                    "stage": item["stage"],
+                    "model_path": repo_rel_path(item["model_path"]),
+                    "cache_path": repo_rel_path(item["cache_path"]),
+                }
+                for item in built_cache_records
+            ],
+            "results": results,
+            "failure_count": len(failures),
+            "inlier_radius": float(args.inlier_radius),
+            "adaptive_trigger_thresholds": trigger_thresholds,
+            "stage1_method_name": args.stage1_method_name,
+            "stage2_method_name": args.stage2_method_name,
+            "use_bop_gt": bool(args.use_bop_gt),
+            "t_scale": float(args.t_scale),
         },
     )
 
@@ -423,25 +487,29 @@ def main():
     save_json(
         summary_json,
         {
-            "stage1_config_path": stage1_config_path,
-            "stage2_config_path": stage2_config_path,
-            "csv_path": csv_path,
-            "models_dir": models_dir,
-            "cache_dir": cache_dir,
+            "stage1_config_path": repo_rel_path(stage1_config_path),
+            "stage2_config_path": repo_rel_path(stage2_config_path),
+            "csv_path": repo_rel_path(csv_path),
+            "models_dir": repo_rel_path(models_dir),
+            "cache_dir": repo_rel_path(cache_dir),
             "total_tasks": len(rows),
             "unique_model_stage_caches": len(unique_stage_caches),
             "success_count": len(results),
             "failure_count": len(failures),
             "num_workers": int(args.num_workers),
-            "result_json": out_json,
-            "log_path": log_path,
+            "start_method": args.start_method,
+            "result_json": repo_rel_path(out_json),
+            "log_path": repo_rel_path(log_path),
             "script": os.path.basename(__file__),
             "adaptive_trigger_thresholds": trigger_thresholds,
+            "use_bop_gt": bool(args.use_bop_gt),
+            "t_scale": float(args.t_scale),
         },
     )
 
     print(f"\n[DONE] Run directory: {run_dir}")
     print(f"[DONE] Batch JSON: {out_json}")
+    print(f"[DONE] Root Batch JSON: {root_json}")
     print(f"[DONE] Log file: {log_path}")
 
 

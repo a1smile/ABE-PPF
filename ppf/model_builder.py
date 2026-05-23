@@ -107,6 +107,7 @@ def build_ppf_model(
     # 读取增强模块开关。
     enable_rsmrq = bool(cfg.get("enable_rsmrq", False))
     enable_robust = bool(cfg.get("enable_robust_vote", False))
+    store_pair_features = bool(cfg.get("store_pair_features", False)) or enable_robust
 
     # 默认合并方式为 union。
     merge_mode = "union"
@@ -149,7 +150,7 @@ def build_ppf_model(
             # 将原始特征转换为内部特征向量 g。
             g = to_internal_feature_g(f1, f2, f3, f4)
             # 若启用了鲁棒投票，则在条目中保留 g 用于残差计算。
-            g_store = tuple(float(x) for x in g) if enable_robust else None
+            g_store = tuple(float(x) for x in g) if store_pair_features else None
 
             # 构造哈希表条目并插入。
             entry = PPFEntry(mr=i, mi=j, g=g_store)
@@ -168,7 +169,10 @@ def build_ppf_model(
     # 若存在日志器，则输出模型构建摘要。
     if logger:
         logger.info(f"[Model] N={N}, inserted_pairs={n_inserted}, model_diameter={model_diameter:.6f}")
-        logger.info(f"[Model] enable_rsmrq={enable_rsmrq}, merge_mode={merge_mode}, store_features_for_robust={enable_robust}")
+        logger.info(
+            f"[Model] enable_rsmrq={enable_rsmrq}, merge_mode={merge_mode}, "
+            f"store_pair_features={store_pair_features}"
+        )
 
     # 返回构建完成的 PPFModel。
     return PPFModel(

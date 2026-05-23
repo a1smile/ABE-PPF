@@ -13,17 +13,25 @@ import numpy as np
 
 
 ROOT = Path(__file__).resolve().parent.parent
+STANFORD_RESULTS_DIR = ROOT / "experiments" / "results" / "Stanford"
+
+
+def batch_json_path(filename: str) -> Path:
+    preferred = STANFORD_RESULTS_DIR / filename
+    if preferred.exists():
+        return preferred
+    return STANFORD_RESULTS_DIR.parent / filename
 
 DEFAULT_PATHS = {
-    "adaptive": ROOT / "experiments" / "results" / "stanford_adaptive_two_stage_batch.json",
-    "no_rsmrq": ROOT / "experiments" / "results" / "stanford_no_rsmrq_batch.json",
-    "ours": ROOT / "experiments" / "results" / "stanford_ours_full_batch.json",
-    "same_backbone": ROOT / "experiments" / "results" / "stanford_same_backbone_baseline_batch.json",
-    "rv20": ROOT / "experiments" / "results" / "stanford_ours_rv20_batch.json",
-    "rv10": ROOT / "experiments" / "results" / "stanford_ours_rv10_batch.json",
-    "cap64": ROOT / "experiments" / "results" / "stanford_ours_cap64_batch.json",
-    "cap128": ROOT / "experiments" / "results" / "stanford_ours_cap128_batch.json",
-    "cap256": ROOT / "experiments" / "results" / "stanford_ours_cap256_batch.json",
+    "adaptive": batch_json_path("stanford_adaptive_two_stage_batch.json"),
+    "no_rsmrq": batch_json_path("stanford_no_rsmrq_batch.json"),
+    "ours": batch_json_path("stanford_ours_full_batch.json"),
+    "same_backbone": batch_json_path("stanford_same_backbone_baseline_batch.json"),
+    "rv20": batch_json_path("stanford_ours_rv20_batch.json"),
+    "rv10": batch_json_path("stanford_ours_rv10_batch.json"),
+    "cap64": batch_json_path("stanford_ours_cap64_batch.json"),
+    "cap128": batch_json_path("stanford_ours_cap128_batch.json"),
+    "cap256": batch_json_path("stanford_ours_cap256_batch.json"),
 }
 
 TABLE_DIR = ROOT / "experiments" / "tables" / "stanford"

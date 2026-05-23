@@ -8,7 +8,7 @@ import os
 import pickle
 import hashlib
 # 导入 dataclass 装饰器和类型标注工具。
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 # 导入目录创建工具函数。
@@ -38,9 +38,10 @@ class CacheMeta:
     # 是否启用鲁棒投票。
     enable_robust_vote: bool
     # RS-MRQ 相关配置。
-    rsmrq_cfg: Dict[str, Any]
+    rsmrq_cfg: Dict[str, Any] = field(default_factory=dict)
     # RobustVote 相关配置。
-    robust_vote_cfg: Dict[str, Any]
+    robust_vote_cfg: Dict[str, Any] = field(default_factory=dict)
+    store_pair_features: bool = False
 
     # 根据当前元信息生成稳定指纹，用于与缓存文件或当前配置比对。
     def fingerprint(self) -> str:
@@ -55,6 +56,7 @@ class CacheMeta:
             "distance_step_ratio": float(self.distance_step_ratio),
             "enable_rsmrq": bool(self.enable_rsmrq),
             "enable_robust_vote": bool(self.enable_robust_vote),
+            "store_pair_features": bool(getattr(self, "store_pair_features", False)),
             "rsmrq_cfg": self.rsmrq_cfg or {},
             "robust_vote_cfg": self.robust_vote_cfg or {},
         }).encode("utf-8")
@@ -78,6 +80,7 @@ def make_cache_meta(model_name: str, cfg: Dict[str, Any]) -> CacheMeta:
         distance_step_ratio=float(cfg.get("distance_step_ratio", 0.6)),
         enable_rsmrq=bool(cfg.get("enable_rsmrq", False)),
         enable_robust_vote=bool(cfg.get("enable_robust_vote", False)),
+        store_pair_features=bool(cfg.get("store_pair_features", False)),
         rsmrq_cfg=dict(cfg.get("rsmrq", {}) or {}),
         robust_vote_cfg=dict(cfg.get("robust_vote", {}) or {}),
     )
